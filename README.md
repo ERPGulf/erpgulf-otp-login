@@ -1,6 +1,6 @@
 # ERPGulf Simple OTP
 **Version:** 4.5.0  
-**Author:** Farook (ERPGulf)  
+**Author:** Farook K — [https://medium.com/nothing-big](https://medium.com/nothing-big)  
 **Requires:** WordPress 6.0+, WooCommerce 7.0+, PHP 8.0+
 
 ---
@@ -223,7 +223,6 @@ Replace the login form HTML. Applies to **both** the shortcode page and `/otp-te
 ```php
 add_filter('erpgulf_otp_form_html', function($html) {
 
-    // Add a logo above the form
     $logo = '<img src="' . get_stylesheet_directory_uri() . '/logo.png"
                   style="display:block;margin:0 auto 20px;width:120px;">';
 
@@ -305,9 +304,9 @@ Change where the user lands after a successful login.
 add_filter('erpgulf_redirect_after_login', function($url, $user_id) {
 
     if ( user_can($user_id, 'manage_options') ) {
-        return admin_url(); // admins go to dashboard
+        return admin_url();
     }
-    return $url; // everyone else goes to My Account
+    return $url;
 
 }, 10, 2);
 ```
@@ -320,9 +319,8 @@ Override how the phone number suffix is extracted for lookup matching.
 ```php
 add_filter('erpgulf_clean_phone', function($cleaned, $original) {
 
-    // Use last 9 digits instead of 7 for stricter matching
     $digits = preg_replace('/[^0-9]/', '', $original);
-    return substr($digits, -9);
+    return substr($digits, -9); // use 9 digits instead of 7
 
 }, 10, 2);
 ```
@@ -338,17 +336,11 @@ Fires before any option is written when admin clicks Save All Settings.
 
 ```php
 add_action('erpgulf_before_save_settings', function($post_data) {
-
     $who  = wp_get_current_user()->user_login;
     $time = current_time('mysql');
     error_log("OTP settings changed by {$who} at {$time}");
-
 });
 ```
-
-| Parameter | Type | Description |
-|---|---|---|
-| `$post_data` | array | Copy of `$_POST` from the settings form |
 
 ---
 
@@ -358,28 +350,17 @@ Fires after OTP has been dispatched via SMS and/or email.
 ```php
 add_action('erpgulf_after_send_otp', function($user_id, $otp, $phone) {
 
-    // Count daily OTP requests per user
     $key   = 'otp_requests_' . current_time('Y-m-d');
     $count = (int) get_user_meta($user_id, $key, true);
     update_user_meta($user_id, $key, $count + 1);
 
-    // Alert if more than 5 in one day
     if ( $count + 1 >= 5 ) {
-        wp_mail(
-            get_option('admin_email'),
-            'Suspicious OTP Activity',
-            "User {$user_id} has requested " . ($count + 1) . " OTPs today."
-        );
+        wp_mail(get_option('admin_email'), 'Suspicious OTP Activity',
+            "User {$user_id} requested " . ($count + 1) . " OTPs today.");
     }
 
 }, 10, 3);
 ```
-
-| Parameter | Type | Description |
-|---|---|---|
-| `$user_id` | int | WordPress user ID |
-| `$otp` | int | The 6-digit OTP (treat as sensitive) |
-| `$phone` | string | Raw phone from user meta (may be empty) |
 
 ---
 
@@ -388,19 +369,8 @@ Fires after a successful login — for both OTP and password methods.
 
 ```php
 add_action('erpgulf_user_logged_in', function($user_id, $method) {
-
-    // Record login history
     update_user_meta($user_id, 'last_login',        current_time('mysql'));
     update_user_meta($user_id, 'last_login_method', $method);
-
-    // Award daily loyalty points
-    $today = current_time('Y-m-d');
-    if ( get_user_meta($user_id, 'last_points_award', true) !== $today ) {
-        $pts = (int) get_user_meta($user_id, 'loyalty_points', true);
-        update_user_meta($user_id, 'loyalty_points',     $pts + 10);
-        update_user_meta($user_id, 'last_points_award',  $today);
-    }
-
 }, 10, 2);
 ```
 
@@ -421,22 +391,441 @@ add_action('erpgulf_verify_otp_failed', function($user_id, $submitted_otp, $stor
     update_user_meta($user_id, 'otp_fail_count', $fails);
 
     if ( $fails >= 3 ) {
-        // Wipe the OTP so it cannot be guessed
         delete_user_meta($user_id, 'erpgulf_current_otp');
         delete_user_meta($user_id, 'erpgulf_otp_expiry');
         update_user_meta($user_id, 'otp_fail_count', 0);
-        // Send security alert to admin
-        wp_mail(get_option('admin_email'), 'OTP brute force alert', "User {$user_id} failed 3 times.");
+        wp_mail(get_option('admin_email'), 'OTP brute force alert',
+            "User {$user_id} failed OTP 3 times.");
     }
 
 }, 10, 3);
 ```
 
-| Parameter | Type | Description |
-|---|---|---|
-| `$user_id` | int | WordPress user ID |
-| `$submitted_otp` | string | What the user typed |
-| `$stored_otp` | string | What was stored (treat as sensitive) |
+---
+
+## Adding New Providers
+
+The plugin is built so you can swap or add SMS and email providers  
+without touching any existing files.
+
+Each provider is a **single PHP file** with **one function** that:
+- Accepts the phone/email, the OTP, and a settings array
+- Sends the message
+- Returns `[ 'success' => true ]` or `[ 'success' => false, 'message' => '...' ]`
+
+---
+
+### Adding a New SMS Provider
+
+#### Step 1 — Create the provider file
+
+Create a new file in the plugin folder.  
+Example: `twilio-provider.php`
+
+```php
+<?php
+/**
+ * SMS Provider: Twilio
+ *
+ * Returns: [ 'success' => bool, 'message' => string (on failure) ]
+ */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+function erpgulf_send_sms_twilio( string $phone, int $otp, array $settings ): array {
+
+    $sid   = ! empty($settings['account_sid']) ? trim($settings['account_sid']) : '';
+    $token = ! empty($settings['auth_token'])  ? trim($settings['auth_token'])  : '';
+    $from  = ! empty($settings['from_number']) ? trim($settings['from_number']) : '';
+
+    // ── Validate credentials ──────────────────────────────────────
+    if ( empty($sid) || empty($token) || empty($from) ) {
+        return [ 'success' => false, 'message' => 'Twilio credentials are missing.' ];
+    }
+
+    // ── Build message text ────────────────────────────────────────
+    $message = ! empty($settings['message_en'])
+        ? trim($settings['message_en'])
+        : "Your verification code is: {$otp}. Valid for 5 minutes.";
+
+    // ── Apply the shared SMS text filter ─────────────────────────
+    // This allows the erpgulf_otp_message_text filter to work
+    // with your provider exactly as it does with ExpertTexting.
+    $message = (string) apply_filters(
+        'erpgulf_otp_message_text',
+        $message,
+        $otp,
+        $phone,
+        $settings['user_id'] ?? 0
+    );
+
+    // ── Send via Twilio REST API ──────────────────────────────────
+    $url  = "https://api.twilio.com/2010-04-01/Accounts/{$sid}/Messages.json";
+
+    $response = wp_remote_post( $url, [
+        'timeout'   => 30,
+        'sslverify' => true,
+        'headers'   => [
+            'Authorization' => 'Basic ' . base64_encode("{$sid}:{$token}"),
+            'Content-Type'  => 'application/x-www-form-urlencoded',
+        ],
+        'body' => [
+            'From' => $from,
+            'To'   => '+' . ltrim($phone, '+'),
+            'Body' => $message,
+        ],
+    ]);
+
+    if ( is_wp_error($response) ) {
+        return [ 'success' => false, 'message' => 'HTTP error: ' . $response->get_error_message() ];
+    }
+
+    $http_code = wp_remote_retrieve_response_code($response);
+    $raw       = wp_remote_retrieve_body($response);
+    $res       = json_decode($raw, true);
+
+    // Twilio returns 201 Created on success
+    if ( $http_code === 201 && ! empty($res['sid']) ) {
+        return [ 'success' => true ];
+    }
+
+    $error = $res['message'] ?? $raw;
+    return [ 'success' => false, 'message' => 'Twilio error: ' . esc_html($error) ];
+}
+```
+
+---
+
+#### Step 2 — Load it in the main plugin file
+
+Open `erpgulf-otp-login.php` and add one line near the top alongside the existing requires:
+
+```php
+require_once plugin_dir_path(__FILE__) . 'experttexting-provider.php';
+require_once plugin_dir_path(__FILE__) . 'oci-smtp-provider.php';
+require_once plugin_dir_path(__FILE__) . 'twilio-provider.php';   // ← add this
+```
+
+---
+
+#### Step 3 — Call it in `erpgulf_handle_send_otp()`
+
+In `erpgulf-otp-login.php` find the SMS sending block (look for "Send SMS") and replace the call:
+
+```php
+// Before — ExpertTexting
+$r = erpgulf_send_sms_experttexting($phone, $otp, [
+    'username'   => get_option('erpgulf_et_username'),
+    'api_key'    => get_option('erpgulf_et_api_key'),
+    'api_secret' => get_option('erpgulf_et_api_secret'),
+    ...
+]);
+
+// After — Twilio
+$r = erpgulf_send_sms_twilio($phone, $otp, [
+    'account_sid' => get_option('erpgulf_twilio_sid'),
+    'auth_token'  => get_option('erpgulf_twilio_token'),
+    'from_number' => get_option('erpgulf_twilio_from'),
+    'message_en'  => $msg_sms_en,
+    'message_ar'  => $msg_sms_ar,
+    'user_id'     => $user->ID,
+]);
+```
+
+---
+
+#### Step 4 — Add settings fields (optional but recommended)
+
+In `erpgulf_settings_render()` add a new section for Twilio credentials,  
+exactly like the existing ExpertTexting section:
+
+```php
+<div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
+    <h3 style="margin-top:0;">📱 SMS Credentials (Twilio)</h3>
+    <table class="form-table">
+        <tr>
+            <th>Account SID</th>
+            <td><input type="text" name="twilio_sid"
+                       value="<?php echo esc_attr(get_option('erpgulf_twilio_sid')); ?>"
+                       class="regular-text"></td>
+        </tr>
+        <tr>
+            <th>Auth Token</th>
+            <td><input type="password" name="twilio_token"
+                       value="<?php echo esc_attr(get_option('erpgulf_twilio_token')); ?>"
+                       class="regular-text"></td>
+        </tr>
+        <tr>
+            <th>From Number</th>
+            <td><input type="text" name="twilio_from"
+                       value="<?php echo esc_attr(get_option('erpgulf_twilio_from')); ?>"
+                       class="regular-text"
+                       placeholder="+12345678900"></td>
+        </tr>
+    </table>
+</div>
+```
+
+And save the new fields in the save block:
+
+```php
+update_option('erpgulf_twilio_sid',   trim(sanitize_text_field($_POST['twilio_sid'])));
+update_option('erpgulf_twilio_token', trim(sanitize_text_field($_POST['twilio_token'])));
+update_option('erpgulf_twilio_from',  trim(sanitize_text_field($_POST['twilio_from'])));
+```
+
+---
+
+#### SMS Provider Contract — what every provider file must follow
+
+```
+Function name:   erpgulf_send_sms_{yourprovider}()
+Parameters:      ( string $phone, int $otp, array $settings )
+Returns:         [ 'success' => true ]
+              or [ 'success' => false, 'message' => 'reason' ]
+
+The $settings array will contain at minimum:
+    message_en   Resolved English message text
+    message_ar   Resolved Arabic message text
+    user_id      WordPress user ID
+    country_code Default country code from settings
+
+Apply the erpgulf_otp_message_text filter before sending
+so that developer overrides still work with your provider.
+```
+
+---
+
+### Adding a New Email Provider
+
+#### Step 1 — Create the provider file
+
+Example: `sendgrid-provider.php`
+
+```php
+<?php
+/**
+ * Email Provider: SendGrid
+ *
+ * Returns: [ 'success' => bool, 'message' => string (on failure) ]
+ */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+function erpgulf_send_email_sendgrid( string $email, int $otp, array $settings ): array {
+
+    $api_key  = ! empty($settings['api_key'])  ? trim($settings['api_key'])  : '';
+    $from     = ! empty($settings['from'])     ? trim($settings['from'])     : '';
+    $from_name = ! empty($settings['from_name']) ? trim($settings['from_name']) : 'ERPGulf Security';
+
+    // ── Validate ──────────────────────────────────────────────────
+    if ( empty($api_key) ) {
+        return [ 'success' => false, 'message' => 'SendGrid API key is missing.' ];
+    }
+    if ( empty($from) || ! is_email($from) ) {
+        return [ 'success' => false, 'message' => 'SendGrid sender email is missing or invalid.' ];
+    }
+
+    // ── Build subject and body from passed-in templates ───────────
+    $subject = ! empty($settings['subject'])
+        ? trim($settings['subject'])
+        : "Your verification code: {$otp}";
+
+    $msg_en = ! empty($settings['message_en'])
+        ? trim($settings['message_en'])
+        : "Your verification code is {$otp}. Valid for 5 minutes.";
+
+    $msg_ar = ! empty($settings['message_ar'])
+        ? trim($settings['message_ar'])
+        : "رمز التحقق الخاص بك هو {$otp}. صالح لمدة 5 دقائق.";
+
+    // ── Build HTML body ───────────────────────────────────────────
+    // Reuse the shared email body builder from oci-smtp-provider.php
+    $html_body = erpgulf_build_email_body($otp, $msg_en, $msg_ar);
+
+    // ── SendGrid v3 API payload ───────────────────────────────────
+    $payload = [
+        'personalizations' => [[
+            'to' => [[ 'email' => $email ]],
+        ]],
+        'from'    => [ 'email' => $from, 'name' => $from_name ],
+        'subject' => $subject,
+        'content' => [[
+            'type'  => 'text/html',
+            'value' => $html_body,
+        ]],
+    ];
+
+    $response = wp_remote_post('https://api.sendgrid.com/v3/mail/send', [
+        'timeout'   => 30,
+        'sslverify' => true,
+        'headers'   => [
+            'Authorization' => 'Bearer ' . $api_key,
+            'Content-Type'  => 'application/json',
+        ],
+        'body' => wp_json_encode($payload),
+    ]);
+
+    if ( is_wp_error($response) ) {
+        return [ 'success' => false, 'message' => 'HTTP error: ' . $response->get_error_message() ];
+    }
+
+    $http_code = wp_remote_retrieve_response_code($response);
+
+    // SendGrid returns 202 Accepted on success
+    if ( $http_code === 202 ) {
+        return [ 'success' => true ];
+    }
+
+    $raw   = wp_remote_retrieve_body($response);
+    $res   = json_decode($raw, true);
+    $error = $res['errors'][0]['message'] ?? $raw;
+
+    return [ 'success' => false, 'message' => 'SendGrid error: ' . esc_html($error) ];
+}
+```
+
+---
+
+#### Step 2 — Load it in the main plugin file
+
+```php
+require_once plugin_dir_path(__FILE__) . 'oci-smtp-provider.php';
+require_once plugin_dir_path(__FILE__) . 'sendgrid-provider.php';   // ← add this
+```
+
+---
+
+#### Step 3 — Call it in `erpgulf_handle_send_otp()`
+
+Find the email sending block and replace the call:
+
+```php
+// Before — OCI SMTP
+$r = erpgulf_send_email_oci($user->user_email, $otp, [
+    'host'    => get_option('erpgulf_oci_host'),
+    ...
+]);
+
+// After — SendGrid
+$r = erpgulf_send_email_sendgrid($user->user_email, $otp, [
+    'api_key'    => get_option('erpgulf_sg_api_key'),
+    'from'       => get_option('erpgulf_sg_from'),
+    'from_name'  => get_option('erpgulf_sg_from_name'),
+    'subject'    => $msg_email_sub,
+    'message_en' => $msg_email_en,
+    'message_ar' => $msg_email_ar,
+]);
+```
+
+---
+
+#### Step 4 — Add settings fields
+
+In `erpgulf_settings_render()` add a SendGrid section:
+
+```php
+<div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
+    <h3 style="margin-top:0;">📧 Email Credentials (SendGrid)</h3>
+    <table class="form-table">
+        <tr>
+            <th>API Key</th>
+            <td><input type="password" name="sg_api_key"
+                       value="<?php echo esc_attr(get_option('erpgulf_sg_api_key')); ?>"
+                       class="regular-text"></td>
+        </tr>
+        <tr>
+            <th>From Email</th>
+            <td><input type="email" name="sg_from"
+                       value="<?php echo esc_attr(get_option('erpgulf_sg_from')); ?>"
+                       class="regular-text"></td>
+        </tr>
+        <tr>
+            <th>From Name</th>
+            <td><input type="text" name="sg_from_name"
+                       value="<?php echo esc_attr(get_option('erpgulf_sg_from_name', 'ERPGulf Security')); ?>"
+                       class="regular-text"></td>
+        </tr>
+    </table>
+</div>
+```
+
+Save the fields:
+
+```php
+update_option('erpgulf_sg_api_key',   trim(sanitize_text_field($_POST['sg_api_key'])));
+update_option('erpgulf_sg_from',      trim(sanitize_email($_POST['sg_from'])));
+update_option('erpgulf_sg_from_name', trim(sanitize_text_field($_POST['sg_from_name'])));
+```
+
+---
+
+#### Email Provider Contract — what every provider file must follow
+
+```
+Function name:   erpgulf_send_email_{yourprovider}()
+Parameters:      ( string $email, int $otp, array $settings )
+Returns:         [ 'success' => true ]
+              or [ 'success' => false, 'message' => 'reason' ]
+
+The $settings array will contain at minimum:
+    subject      Resolved email subject line
+    message_en   Resolved English body text
+    message_ar   Resolved Arabic body text
+
+Use erpgulf_build_email_body($otp, $msg_en, $msg_ar) to
+generate the shared bilingual HTML email template.
+This keeps the email design consistent across all providers.
+```
+
+---
+
+### Running Both SMS Providers Simultaneously
+
+If you want to send via **two SMS providers at the same time**  
+(e.g. ExpertTexting as primary, Twilio as backup):
+
+```php
+// In erpgulf_handle_send_otp() — replace the SMS block with:
+
+$sms_settings_et = [
+    'username'   => get_option('erpgulf_et_username'),
+    'api_key'    => get_option('erpgulf_et_api_key'),
+    'api_secret' => get_option('erpgulf_et_api_secret'),
+    'message_en' => $msg_sms_en,
+    'message_ar' => $msg_sms_ar,
+    'user_id'    => $user->ID,
+];
+
+$r = erpgulf_send_sms_experttexting($phone, $otp, $sms_settings_et);
+
+// If ExpertTexting fails, try Twilio as fallback
+if ( empty($r['success']) ) {
+    $r = erpgulf_send_sms_twilio($phone, $otp, [
+        'account_sid' => get_option('erpgulf_twilio_sid'),
+        'auth_token'  => get_option('erpgulf_twilio_token'),
+        'from_number' => get_option('erpgulf_twilio_from'),
+        'message_en'  => $msg_sms_en,
+        'user_id'     => $user->ID,
+    ]);
+}
+
+if ( empty($r['success']) ) {
+    $errors[] = 'SMS: ' . ( $r['message'] ?? 'Unknown error' );
+}
+```
+
+---
+
+### Provider Summary
+
+| Provider | File | Function | Type |
+|---|---|---|---|
+| ExpertTexting | `experttexting-provider.php` | `erpgulf_send_sms_experttexting()` | SMS (built-in) |
+| OCI SMTP | `oci-smtp-provider.php` | `erpgulf_send_email_oci()` | Email (built-in) |
+| Twilio | `twilio-provider.php` | `erpgulf_send_sms_twilio()` | SMS (example) |
+| SendGrid | `sendgrid-provider.php` | `erpgulf_send_email_sendgrid()` | Email (example) |
+| Any other | `{name}-provider.php` | `erpgulf_send_{type}_{name}()` | Your provider |
 
 ---
 
@@ -465,7 +854,6 @@ All styling goes in your **child theme's `functions.php`**.
 ```php
 add_filter('erpgulf_otp_form_styles', function($css) {
     return $css . '
-        /* Your custom CSS here */
         .otp-box {
             border-radius: 0;
             border-top: 4px solid #your-brand-color;
@@ -484,7 +872,7 @@ add_filter('erpgulf_otp_form_styles', function($css) {
 });
 ```
 
-### Step 3 — Translate error messages (if Arabic site)
+### Step 3 — Translate error messages (Arabic site)
 
 ```php
 add_filter('erpgulf_error_messages', function($message, $error_type) {
@@ -534,7 +922,7 @@ define( 'WP_DEBUG_LOG', true );
 define( 'WP_DEBUG_DISPLAY', false );
 ```
 
-Open a terminal and watch the log:
+Watch the log (SSH):
 
 ```bash
 tail -f /var/www/woocommerce/wp-content/debug.log | grep "TEST"
@@ -588,7 +976,6 @@ Visit: yoursite.com/otp-test
 ```
 - Login box appears centred on grey background
 - No theme header or footer
-- Input field and Continue button visible
 
 ---
 
@@ -596,27 +983,22 @@ Visit: yoursite.com/otp-test
 ```
 /otp-test → type a registered email → Continue
 ```
-- OTP step appears on screen
-- Email arrives in inbox (bilingual HTML)
-- SMS arrives on phone (if phone on file)
+- OTP step appears
+- Email arrives (bilingual HTML)
+- SMS arrives if phone on file
 - Log: `✅ FILTER TEST: SMS sending to 9665xxxxxxx`
-- Log: `✅ HOOK TEST: OTP sent — user X, phone 9665xxxxxxx`
+- Log: `✅ HOOK TEST: OTP sent — user X`
 
 ---
 
-#### Test 4 — Login by phone (test all formats)
-
-Try each format — all should find the same user:
+#### Test 4 — Login by phone (all formats)
 
 ```
-0501234567
-+966501234567
-00966501234567
-966501234567
-501 234 567
+0501234567          → ✅ finds user
++966501234567       → ✅ finds user
+00966501234567      → ✅ finds user
+501 234 567         → ✅ finds user
 ```
-
-Each should trigger OTP send.
 
 ---
 
@@ -624,142 +1006,116 @@ Each should trigger OTP send.
 ```
 /otp-test → type a WordPress username → Continue
 ```
-- No OTP sent
-- Password field appears (not OTP field)
-- Type correct password → login succeeds
-- Log: `✅ HOOK TEST: user X logged in via password`
-- Type wrong password → "Incorrect password" error
-- Log: `✅ FILTER TEST: error type=wrong_password`
+- Password field appears (not OTP)
+- Correct password → login
+- Wrong password → error + log
 
 ---
 
-#### Test 6 — Correct OTP code
+#### Test 6 — Correct OTP
 ```
-/otp-test → phone → Continue → type real code → Verify
+/otp-test → phone → Continue → correct code → Verify
 ```
-- "✅ Verified! Redirecting…" appears
-- Browser redirects to My Account
+- Redirects to My Account
 - User is logged in
 - Log: `✅ HOOK TEST: user X logged in via otp`
-- Log: `✅ FILTER TEST: redirect to https://...`
 
 ---
 
-#### Test 7 — Wrong OTP code
+#### Test 7 — Wrong OTP
 ```
-/otp-test → phone → Continue → type 000000 → Verify
+Type 000000 → Verify
 ```
-- "Invalid verification code." appears on screen
-- Real OTP still works after one wrong attempt
+- Error message appears
 - Log: `✅ HOOK TEST: wrong OTP — user X typed 000000`
-- Log: `✅ FILTER TEST: error type=invalid_code`
 
 ---
 
 #### Test 8 — Unknown identifier
 ```
-/otp-test → type nobody@nowhere.com → Continue
+/otp-test → nobody@nowhere.com → Continue
 ```
-- "We couldn't find an account…" appears on screen
-- Nothing sent to anyone
+- "We couldn't find an account…" on screen
 - Log: `✅ FILTER TEST: error type=number_not_found`
 
 ---
 
 #### Test 9 — Expired OTP
 ```
-/otp-test → phone → Continue
-→ wait 5 minutes and 10 seconds
-→ type the code that arrived → Verify
+Request OTP → wait 5 min 10 sec → submit it
 ```
-- "This code has expired. Please request a new one." appears
+- "This code has expired." on screen
 
 ---
 
 #### Test 10 — Error messages filter
-Add to `functions.php`:
 ```php
-add_filter('erpgulf_error_messages', function($message, $type) {
+add_filter('erpgulf_error_messages', function($msg, $type) {
     if ($type === 'invalid_code') return '🔴 FILTER WORKING';
-    return $message;
+    return $msg;
 }, 10, 2);
 ```
-Type wrong code → screen shows `🔴 FILTER WORKING`  
-Remove filter → original message returns.
+Type wrong code → screen shows `🔴 FILTER WORKING`
 
 ---
 
 #### Test 11 — SMS text filter
-Add to `functions.php`:
 ```php
-add_filter('erpgulf_otp_message_text', function($message, $otp, $phone, $user_id) {
+add_filter('erpgulf_otp_message_text', function($msg, $otp, $phone, $uid) {
     return "FILTER TEST — code: {$otp}";
 }, 10, 4);
 ```
-Request OTP → SMS says `FILTER TEST — code: 123456`  
-Remove filter → bilingual SMS returns.
+SMS received says `FILTER TEST — code: 123456`
 
 ---
 
 #### Test 12 — Redirect filter
-Add to `functions.php`:
 ```php
-add_filter('erpgulf_redirect_after_login', function($url, $user_id) {
+add_filter('erpgulf_redirect_after_login', function($url, $uid) {
     return home_url('/');
 }, 10, 2);
 ```
-Login → browser goes to homepage instead of My Account.  
-Remove filter → goes back to My Account.
+After login → goes to homepage
 
 ---
 
-#### Test 13 — Form styles filter
-Add to `functions.php`:
+#### Test 13 — Style filter
 ```php
 add_filter('erpgulf_test_page_styles', function($css) {
-    return $css . '
-        .otp-box button { background: #e63946 !important; }
-        body { background: #1a1a2e; }
-    ';
+    return $css . ' .otp-box button { background: #e63946 !important; } body { background: #1a1a2e; }';
 });
 ```
-Visit `/otp-test` → red button, dark background.  
-Remove filter → original style returns.
+Visit `/otp-test` → red button, dark background
 
 ---
 
 #### Test 14 — Shortcode on a real page
 ```
-Admin → Pages → Add New
-→ Title: Login Test
-→ Content: [erpgulf_otp_form]
-→ Publish → visit the page
+Admin → Pages → Add New → content: [erpgulf_otp_form] → Publish → visit
 ```
 - Theme header and footer appear
-- Login form appears inside the page
-- Everything works the same as /otp-test
-- Form inherits theme fonts and colours
+- Form works identically to /otp-test
 
 ---
 
 ### Quick Results Reference
 
-| Test | Expected result | Hook / Filter confirmed |
+| Test | Expected | Hook / Filter confirmed |
 |---|---|---|
-| Settings save | Green notice + log line | `erpgulf_before_save_settings` |
-| Test page | Box appears, no theme | — |
-| Email login | OTP sent + arrives | `erpgulf_after_send_otp` |
-| Phone login (all formats) | OTP sent each time | `erpgulf_clean_phone` |
-| Username login | Password field appears | — |
-| Correct OTP | Login + redirect | `erpgulf_user_logged_in`, `erpgulf_redirect_after_login` |
-| Wrong OTP | Error + log | `erpgulf_verify_otp_failed`, `erpgulf_error_messages` |
-| Unknown identifier | Not found error | `erpgulf_error_messages` |
+| Settings save | Green notice + log | `erpgulf_before_save_settings` ✅ |
+| Test page | Box, no theme | — |
+| Email login | OTP arrives | `erpgulf_after_send_otp` ✅ |
+| Phone (all formats) | OTP each time | `erpgulf_clean_phone` ✅ |
+| Username login | Password field | — |
+| Correct OTP | Login + redirect | `erpgulf_user_logged_in` ✅ `erpgulf_redirect_after_login` ✅ |
+| Wrong OTP | Error + log | `erpgulf_verify_otp_failed` ✅ `erpgulf_error_messages` ✅ |
+| Unknown identifier | Not found error | `erpgulf_error_messages` ✅ |
 | Expired OTP | Expired error | — |
-| Error filter | Custom text on screen | `erpgulf_error_messages` |
-| SMS filter | Custom SMS on phone | `erpgulf_otp_message_text` |
-| Redirect filter | Goes to homepage | `erpgulf_redirect_after_login` |
-| Style filter | Red button, dark bg | `erpgulf_test_page_styles` |
-| Shortcode | Form inside themed page | — |
+| Error filter | Custom text | `erpgulf_error_messages` ✅ |
+| SMS filter | Custom SMS | `erpgulf_otp_message_text` ✅ |
+| Redirect filter | Homepage | `erpgulf_redirect_after_login` ✅ |
+| Style filter | Red button | `erpgulf_test_page_styles` ✅ |
+| Shortcode | Themed page | — |
 
 All 14 passing = plugin fully working ✅
 
@@ -769,7 +1125,7 @@ All 14 passing = plugin fully working ✅
 
 Remove all test hooks from `functions.php`.
 
-Turn off debug logging in `wp-config.php`:
+Turn off debug in `wp-config.php`:
 ```php
 define( 'WP_DEBUG', false );
 define( 'WP_DEBUG_LOG', false );
@@ -784,42 +1140,38 @@ define( 'WP_DEBUG_DISPLAY', false );
 ```
 Error: Unrecognized or invalid To Number
 ```
-- Check the phone number stored in the user profile
-- Plugin normalises automatically but the number must have at least 7 digits
+- Check the phone stored in the user profile has at least 7 digits
 - Check Default Country Code is set correctly in settings
 
 ---
 
 ### Email not sending
 ```
-Error: 535 Authorization failed: Envelope From address not authorized
+Error: 535 Authorization failed: Envelope From not authorized
 ```
-1. Go to OCI Console → Email Delivery → Approved Senders
-2. Add the exact email in the plugin's Approved Sender field
-3. Publish SPF and DKIM DNS records for the sender domain
-4. Wait 5 minutes for OCI to verify
-5. Test again
+1. OCI Console → Email Delivery → Approved Senders → add the sender email
+2. Publish SPF and DKIM DNS records for the sender domain
+3. Wait 5 minutes → test again
 
 ---
 
-### Nothing appears in debug.log
-- Check `WP_DEBUG_LOG` is `true` in `wp-config.php`
-- Check the log file exists: `ls -la wp-content/debug.log`
+### Nothing in debug.log
+- Confirm `WP_DEBUG_LOG` is `true` in `wp-config.php`
+- Check log file exists: `ls -la wp-content/debug.log`
 - If missing: `touch wp-content/debug.log && chmod 666 wp-content/debug.log`
 
 ---
 
 ### Hooks not firing
-- Confirm test code is at the **bottom** of `functions.php`
-- Confirm the file was saved
+- Confirm code is at the bottom of `functions.php`
 - Check for PHP syntax errors: `php -l functions.php`
-- Confirm the plugin is **Active** in WordPress Admin → Plugins
+- Confirm plugin is **Active** in WordPress Admin → Plugins
 
 ---
 
 ### Shortcode shows nothing
-- Confirm the plugin is Active
-- Confirm you typed `[erpgulf_otp_form]` exactly (no spaces inside brackets)
+- Confirm plugin is Active
+- Confirm you typed `[erpgulf_otp_form]` exactly
 - Check the page is Published not Draft
 
 ---
@@ -827,17 +1179,17 @@ Error: 535 Authorization failed: Envelope From address not authorized
 ## Security Notes
 
 - OTP expires after **5 minutes**
-- OTP is deleted from the database immediately after successful use
-- Password verification has a **1-second delay** to slow brute-force attempts
-- The `/otp-test` URL has no link, no menu item, and is not indexed — keep it private
+- OTP deleted from database immediately after successful use
+- Password path has a **1-second delay** to slow brute-force attempts
+- `/otp-test` has no link, no menu item, not indexed — keep it private
 - All user input is sanitized before use
-- Admin settings form is protected with WordPress nonces
+- Admin settings form protected with WordPress nonces
 
 ---
 
 ## Support
 
-**Plugin author:** Farook — ERPGulf  
+**Author:** Farook K — [https://medium.com/nothing-big](https://medium.com/nothing-big)  
 **Test URL:** `yoursite.com/otp-test`  
 **Settings:** WordPress Admin → ERPGulf OTP  
 **Shortcode:** `[erpgulf_otp_form]`
