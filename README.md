@@ -1193,3 +1193,9 @@ Error: 535 Authorization failed: Envelope From not authorized
 **Test URL:** `yoursite.com/otp-test`  
 **Settings:** WordPress Admin → ERPGulf OTP  
 **Shortcode:** `[erpgulf_otp_form]`
+**Contact us:** support@erpgulf.com  
+**Supporting Articles:** https://app.erpgulf.com/en/articles
+**Blogs:** https://app.erpgulf.com/blog
+**Documentation and Hosting :** https://docs.claudion.com/
+
+
