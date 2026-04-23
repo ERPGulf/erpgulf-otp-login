@@ -1,4 +1,4 @@
-# ERPGulf Simple OTP
+# Simple OTP Plugin for WooCommerce by ERPGulf
 **Version:** 4.5.0  
 **Author:** Farook K — [https://medium.com/nothing-big](https://medium.com/nothing-big)  
 **Requires:** WordPress 6.0+, WooCommerce 7.0+, PHP 8.0+
