@@ -17,61 +17,38 @@
  *   yoursite.com/otp-test
  *
  * ═══════════════════════════════════════════════════════════════════
+ * ADDING A NEW SMS OR EMAIL PROVIDER
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * 1. Create your provider file  e.g. twilio-provider.php
+ *    Function must follow the contract:
+ *      erpgulf_send_sms_{name}( string $phone, int $otp, array $settings ): array
+ *      returns [ 'success' => true ] or [ 'success' => false, 'message' => '...' ]
+ *
+ * 2. Add require_once below alongside the existing providers.
+ *
+ * 3. Add one entry to erpgulf_sms_providers() or erpgulf_email_providers().
+ *
+ * 4. Go to Admin → ERPGulf OTP → Active Providers → select → Save.
+ *
+ * No other code changes needed. Ever.
+ *
+ * ═══════════════════════════════════════════════════════════════════
  * PUBLIC JAVASCRIPT API  —  window.ERPGulfOTP
  * ═══════════════════════════════════════════════════════════════════
  *
  * Available on every front-end page automatically.
- * No source-code reading required to integrate.
  *
  * METHODS
- *   ERPGulfOTP.sendOTP(phone, onSuccess, onError)
- *     Send an OTP to a phone number or email.
- *     @param phone      string  Phone / email / username
- *     @param onSuccess  fn({user_id, method})  Called on success
- *     @param onError    fn(message)            Called on failure
- *
+ *   ERPGulfOTP.sendOTP(identifier, onSuccess, onError)
  *   ERPGulfOTP.verifyOTP(userId, code, onSuccess, onError)
- *     Verify the OTP code entered by the user.
- *     @param userId     int     From the sendOTP success callback
- *     @param code       string  The 6-digit code
- *     @param onSuccess  fn({redirect})  Called on success
- *     @param onError    fn(message)     Called on failure
- *
  *   ERPGulfOTP.verifyPassword(userId, password, onSuccess, onError)
- *     Verify a password (for username-based login).
  *
  * DOM EVENTS  (dispatched on document)
- *   erpgulf:otp:sent       detail: { user_id, method, phone }
+ *   erpgulf:otp:sent       detail: { user_id, method, identifier }
  *   erpgulf:otp:verified   detail: { user_id, method, redirect }
  *   erpgulf:otp:failed     detail: { user_id, submitted_otp }
- *   erpgulf:login:error    detail: { message, error_type }
- *
- * EXAMPLE — integrate with any button, zero plugin knowledge needed:
- *
- *   document.getElementById('my-btn').addEventListener('click', function() {
- *       var phone = document.getElementById('my-phone').value;
- *       ERPGulfOTP.sendOTP(phone, function(data) {
- *           myApp.userId = data.user_id;
- *           myApp.showCodeInput();
- *       }, function(err) {
- *           myApp.showError(err);
- *       });
- *   });
- *
- *   document.getElementById('my-verify-btn').addEventListener('click', function() {
- *       var code = document.getElementById('my-code').value;
- *       ERPGulfOTP.verifyOTP(myApp.userId, code, function(data) {
- *           window.location.href = data.redirect || '/';
- *       }, function(err) {
- *           myApp.showError(err);
- *       });
- *   });
- *
- *   // Or just listen to events:
- *   document.addEventListener('erpgulf:otp:verified', function(e) {
- *       console.log('User logged in!', e.detail.user_id);
- *       window.location.href = e.detail.redirect;
- *   });
+ *   erpgulf:login:error    detail: { message }
  *
  * ═══════════════════════════════════════════════════════════════════
  * PHP DEVELOPER HOOKS
@@ -97,8 +74,35 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// ─────────────────────────────────────────────────────────────────
+// LOAD PROVIDERS
+// To add a new provider: drop the file here and add require_once.
+// ─────────────────────────────────────────────────────────────────
+
 require_once plugin_dir_path(__FILE__) . 'experttexting-provider.php';
+require_once plugin_dir_path(__FILE__) . '4jawaly-provider.php';
 require_once plugin_dir_path(__FILE__) . 'oci-smtp-provider.php';
+
+// ─────────────────────────────────────────────────────────────────
+// PROVIDER REGISTRY
+// Add one line here when you add a new provider.
+// The admin dropdown builds itself from these arrays.
+// ─────────────────────────────────────────────────────────────────
+
+function erpgulf_sms_providers(): array {
+    return [
+        'experttexting' => 'ExpertTexting',       // ← default
+        '4jawaly'       => '4jawaly (جوالي)',
+        // 'twilio'     => 'Twilio',              // example — uncomment when ready
+    ];
+}
+
+function erpgulf_email_providers(): array {
+    return [
+        'oci'           => 'OCI SMTP (Jeddah)',   // ← default
+        // 'sendgrid'   => 'SendGrid',            // example — uncomment when ready
+    ];
+}
 
 // ─────────────────────────────────────────────────────────────────
 // HELPER — filterable error messages
@@ -125,32 +129,22 @@ function erpgulf_redirect_url( int $user_id = 0 ): string {
 
 add_action('wp_enqueue_scripts', function () {
 
-    // Register a minimal inline script handle
     wp_register_script( 'erpgulf-otp-api', false, ['jquery'], null, true );
     wp_enqueue_script( 'erpgulf-otp-api' );
 
-    // Publish the config object so the JS below can use it
     wp_localize_script( 'erpgulf-otp-api', 'ERPGulfOTPConfig', [
         'ajaxUrl'  => admin_url('admin-ajax.php'),
         'redirect' => erpgulf_redirect_url(0),
         'version'  => '4.6.0',
     ]);
 
-    // The public API — window.ERPGulfOTP
     $api_js = <<<'JS'
 (function (window, $, cfg) {
 
-    /**
-     * Fire a custom DOM event on document so any code can listen.
-     * e.g. document.addEventListener('erpgulf:otp:sent', function(e) { ... });
-     */
     function dispatch(name, detail) {
         document.dispatchEvent(new CustomEvent(name, { bubbles: true, detail: detail || {} }));
     }
 
-    /**
-     * Low-level AJAX helper.
-     */
     function ajax(data, onSuccess, onError) {
         $.post(cfg.ajaxUrl, data, function (res) {
             if (res.success) {
@@ -167,30 +161,15 @@ add_action('wp_enqueue_scripts', function () {
         });
     }
 
-    /**
-     * Public API — window.ERPGulfOTP
-     */
     window.ERPGulfOTP = {
 
         version: cfg.version,
 
-        /**
-         * Send an OTP to a phone number, email, or username.
-         *
-         * @param {string}   identifier  Phone / email / username
-         * @param {function} onSuccess   Called with { user_id, method }
-         *                               method = 'otp' or 'password'
-         * @param {function} onError     Called with error message string
-         *
-         * @fires erpgulf:otp:sent  { user_id, method, identifier }
-         */
         sendOTP: function (identifier, onSuccess, onError) {
             ajax({ action: 'erpgulf_send_otp', identifier: identifier },
                 function (data) {
                     dispatch('erpgulf:otp:sent', {
-                        user_id:    data.user_id,
-                        method:     data.method,
-                        identifier: identifier
+                        user_id: data.user_id, method: data.method, identifier: identifier
                     });
                     onSuccess && onSuccess(data);
                 },
@@ -198,24 +177,11 @@ add_action('wp_enqueue_scripts', function () {
             );
         },
 
-        /**
-         * Verify the OTP code entered by the user.
-         *
-         * @param {number}   userId     From sendOTP onSuccess callback
-         * @param {string}   code       The 6-digit code
-         * @param {function} onSuccess  Called with { redirect }
-         * @param {function} onError    Called with error message string
-         *
-         * @fires erpgulf:otp:verified  { user_id, method: 'otp', redirect }
-         * @fires erpgulf:otp:failed    { user_id, submitted_otp }  on wrong code
-         */
         verifyOTP: function (userId, code, onSuccess, onError) {
             ajax({ action: 'erpgulf_verify_otp', user_id: userId, method: 'otp', otp: code },
                 function (data) {
                     dispatch('erpgulf:otp:verified', {
-                        user_id:  userId,
-                        method:   'otp',
-                        redirect: data.redirect || cfg.redirect
+                        user_id: userId, method: 'otp', redirect: data.redirect || cfg.redirect
                     });
                     onSuccess && onSuccess({ redirect: data.redirect || cfg.redirect });
                 },
@@ -226,23 +192,11 @@ add_action('wp_enqueue_scripts', function () {
             );
         },
 
-        /**
-         * Verify a password (for username-based login).
-         *
-         * @param {number}   userId
-         * @param {string}   password
-         * @param {function} onSuccess  Called with { redirect }
-         * @param {function} onError    Called with error message string
-         *
-         * @fires erpgulf:otp:verified  { user_id, method: 'password', redirect }
-         */
         verifyPassword: function (userId, password, onSuccess, onError) {
             ajax({ action: 'erpgulf_verify_otp', user_id: userId, method: 'password', password: password },
                 function (data) {
                     dispatch('erpgulf:otp:verified', {
-                        user_id:  userId,
-                        method:   'password',
-                        redirect: data.redirect || cfg.redirect
+                        user_id: userId, method: 'password', redirect: data.redirect || cfg.redirect
                     });
                     onSuccess && onSuccess({ redirect: data.redirect || cfg.redirect });
                 },
@@ -250,10 +204,6 @@ add_action('wp_enqueue_scripts', function () {
             );
         },
 
-        /**
-         * Default redirect URL (from plugin settings).
-         * Developers can override via the erpgulf_redirect_after_login PHP filter.
-         */
         defaultRedirect: cfg.redirect,
     };
 
@@ -306,7 +256,7 @@ function erpgulf_otp_form_html(): string {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// HELPER — shared JS (uses the public API internally)
+// HELPER — shared JS
 // ─────────────────────────────────────────────────────────────────
 
 function erpgulf_otp_form_js( string $redirect ): string {
@@ -319,13 +269,11 @@ function erpgulf_otp_form_js( string $redirect ): string {
             \$('#otp-msg').html(text).css('color', color || '#333');
         }
 
-        // Step 1 — send OTP via the public API
         \$('#btn-send').on('click', function () {
             var id = \$.trim(\$('#identifier').val());
             if (!id) { msg('Please enter your email, mobile, or username.', 'red'); return; }
             msg('Looking up your account\u2026', '#666');
             \$(this).prop('disabled', true);
-
             ERPGulfOTP.sendOTP(id, function (data) {
                 \$('#btn-send').prop('disabled', false);
                 \$('#otp-step-1').hide();
@@ -341,13 +289,10 @@ function erpgulf_otp_form_js( string $redirect ): string {
             });
         });
 
-        // Step 2a — verify OTP via the public API
         \$('#btn-verify-otp').on('click', function () {
             var code = \$.trim(\$('#otp-code').val());
             if (!code) { msg('Please enter the verification code.', 'red'); return; }
             msg('Verifying\u2026', '#666'); \$(this).prop('disabled', true);
-
-            // user_id was stored when erpgulf:otp:sent fired
             ERPGulfOTP.verifyOTP(window._erpgulf_uid, code, function (data) {
                 \$('#btn-verify-otp').prop('disabled', false);
                 msg('\u2705 Verified! Redirecting\u2026', 'green');
@@ -358,12 +303,10 @@ function erpgulf_otp_form_js( string $redirect ): string {
             });
         });
 
-        // Step 2b — verify password via the public API
         \$('#btn-verify-password').on('click', function () {
             var pw = \$('#password').val();
             if (!pw) { msg('Please enter your password.', 'red'); return; }
             msg('Logging in\u2026', '#666'); \$(this).prop('disabled', true);
-
             ERPGulfOTP.verifyPassword(window._erpgulf_uid, pw, function (data) {
                 \$('#btn-verify-password').prop('disabled', false);
                 msg('\u2705 Login successful! Redirecting\u2026', 'green');
@@ -374,12 +317,10 @@ function erpgulf_otp_form_js( string $redirect ): string {
             });
         });
 
-        // Store user_id when OTP is sent so verify steps can use it
         document.addEventListener('erpgulf:otp:sent', function (e) {
             window._erpgulf_uid = e.detail.user_id;
         });
 
-        // Enter key shortcuts
         \$('#identifier').on('keypress', function (e) { if (e.which===13) \$('#btn-send').trigger('click'); });
         \$('#otp-code').on('keypress',   function (e) { if (e.which===13) \$('#btn-verify-otp').trigger('click'); });
         \$('#password').on('keypress',   function (e) { if (e.which===13) \$('#btn-verify-password').trigger('click'); });
@@ -411,15 +352,10 @@ function erpgulf_otp_base_css(): string {
 
 add_shortcode( 'erpgulf_otp_form', function () {
     wp_enqueue_script('jquery');
-
-    /**
-     * Filter: erpgulf_otp_form_styles
-     */
     $css = (string) apply_filters( 'erpgulf_otp_form_styles', erpgulf_otp_base_css() );
     wp_register_style( 'erpgulf-otp-form', false );
     wp_enqueue_style( 'erpgulf-otp-form' );
     wp_add_inline_style( 'erpgulf-otp-form', $css );
-
     $redirect = erpgulf_redirect_url( get_current_user_id() );
     return erpgulf_otp_form_html() . erpgulf_otp_form_js( $redirect );
 });
@@ -431,7 +367,7 @@ add_shortcode( 'erpgulf_otp_form', function () {
 add_action('admin_menu', function () {
     add_menu_page(
         'ERPGulf OTP', 'ERPGulf OTP', 'manage_options',
-        'erpgulf-otp', 'erpgulf_settings_render', 'dashicons-shield-lock'
+        'erpgulf-otp', 'erpgulf_settings_render', 'dashicons-shield'
     );
 });
 
@@ -441,15 +377,30 @@ function erpgulf_settings_render() {
 
         do_action( 'erpgulf_before_save_settings', $_POST );
 
+        // Active providers
+        update_option('erpgulf_active_sms_provider',   sanitize_key($_POST['active_sms_provider']));
+        update_option('erpgulf_active_email_provider',  sanitize_key($_POST['active_email_provider']));
+
+        // ExpertTexting
         update_option('erpgulf_et_username',     trim(sanitize_text_field($_POST['et_username'])));
         update_option('erpgulf_et_api_key',      trim(sanitize_text_field($_POST['et_api_key'])));
         update_option('erpgulf_et_api_secret',   trim(sanitize_text_field($_POST['et_api_secret'])));
         update_option('erpgulf_et_country_code', trim(sanitize_text_field($_POST['et_country_code'])));
+
+        // 4jawaly
+        update_option('erpgulf_4j_app_key',    trim(sanitize_text_field($_POST['4j_app_key'])));
+        update_option('erpgulf_4j_app_secret', trim(sanitize_text_field($_POST['4j_app_secret'])));
+        update_option('erpgulf_4j_sender',     trim(sanitize_text_field($_POST['4j_sender'])));
+        update_option('erpgulf_4j_number_iso', strtoupper(trim(sanitize_text_field($_POST['4j_number_iso']))));
+
+        // OCI Email
         update_option('erpgulf_oci_host', trim(sanitize_text_field($_POST['oci_host'])));
         update_option('erpgulf_oci_port', trim(sanitize_text_field($_POST['oci_port'])));
         update_option('erpgulf_oci_user', trim(sanitize_textarea_field($_POST['oci_user'])));
         update_option('erpgulf_oci_pass', trim($_POST['oci_pass']));
         update_option('erpgulf_oci_from', trim(sanitize_email($_POST['oci_from'])));
+
+        // Message templates
         update_option('erpgulf_msg_sms_en',    trim(sanitize_textarea_field($_POST['msg_sms_en'])));
         update_option('erpgulf_msg_sms_ar',    trim(sanitize_textarea_field($_POST['msg_sms_ar'])));
         update_option('erpgulf_msg_email_sub', trim(sanitize_text_field($_POST['msg_email_sub'])));
@@ -458,6 +409,10 @@ function erpgulf_settings_render() {
 
         echo '<div class="updated"><p>✅ Settings saved.</p></div>';
     }
+
+    // Current selections — ExpertTexting is default SMS, OCI is default Email
+    $active_sms   = get_option('erpgulf_active_sms_provider',   'experttexting');
+    $active_email = get_option('erpgulf_active_email_provider',  'oci');
 
     $site          = get_bloginfo('name');
     $def_sms_en    = "The OTP for your {site} account login is {otp}. Valid for 5 minutes. Do not share this code.";
@@ -484,8 +439,56 @@ function erpgulf_settings_render() {
         <form method="post">
             <?php wp_nonce_field('erpgulf_save_settings'); ?>
 
+            {{!-- ── Active Providers selector ── --}}
+            <div style="background:#e8f4fd;padding:20px;border:2px solid #007cba;border-radius:4px;margin-bottom:24px;">
+                <h3 style="margin-top:0;">⚙️ Active Providers</h3>
+                <p style="color:#555;font-size:13px;margin-top:0;">
+                    Select which provider handles SMS and Email. All providers below are saved — only the selected ones are used.
+                </p>
+                <table class="form-table" style="margin-top:0;">
+                    <tr>
+                        <th style="width:200px;">Active SMS Provider</th>
+                        <td>
+                            <select name="active_sms_provider" style="min-width:220px;font-size:14px;">
+                                <?php foreach ( erpgulf_sms_providers() as $key => $label ): ?>
+                                    <option value="<?php echo esc_attr($key); ?>"
+                                        <?php selected( $active_sms, $key ); ?>>
+                                        <?php echo esc_html($label); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description">
+                                Currently active: <strong><?php echo esc_html( erpgulf_sms_providers()[$active_sms] ?? $active_sms ); ?></strong>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Active Email Provider</th>
+                        <td>
+                            <select name="active_email_provider" style="min-width:220px;font-size:14px;">
+                                <?php foreach ( erpgulf_email_providers() as $key => $label ): ?>
+                                    <option value="<?php echo esc_attr($key); ?>"
+                                        <?php selected( $active_email, $key ); ?>>
+                                        <?php echo esc_html($label); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description">
+                                Currently active: <strong><?php echo esc_html( erpgulf_email_providers()[$active_email] ?? $active_email ); ?></strong>
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            {{!-- ── ExpertTexting credentials ── --}}
             <div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
-                <h3 style="margin-top:0;">📱 SMS Credentials (ExpertTexting)</h3>
+                <h3 style="margin-top:0;">
+                    📱 SMS — ExpertTexting
+                    <?php if ( $active_sms === 'experttexting' ): ?>
+                        <span style="font-size:12px;font-weight:normal;background:#007cba;color:#fff;padding:2px 8px;border-radius:10px;margin-left:8px;">Active</span>
+                    <?php endif; ?>
+                </h3>
                 <table class="form-table" style="margin-top:0;">
                     <tr><th style="width:200px;">Username</th><td><input type="text" name="et_username" value="<?php echo esc_attr(get_option('erpgulf_et_username')); ?>" class="regular-text"></td></tr>
                     <tr><th>API Key</th><td><input type="text" name="et_api_key" value="<?php echo esc_attr(get_option('erpgulf_et_api_key')); ?>" class="regular-text"></td></tr>
@@ -500,8 +503,58 @@ function erpgulf_settings_render() {
                 </table>
             </div>
 
+            {{!-- ── 4jawaly credentials ── --}}
             <div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
-                <h3 style="margin-top:0;">📧 Email Credentials (OCI SMTP — Jeddah)</h3>
+                <h3 style="margin-top:0;">
+                    📱 SMS — 4jawaly (جوالي)
+                    <?php if ( $active_sms === '4jawaly' ): ?>
+                        <span style="font-size:12px;font-weight:normal;background:#007cba;color:#fff;padding:2px 8px;border-radius:10px;margin-left:8px;">Active</span>
+                    <?php endif; ?>
+                </h3>
+                <p style="color:#666;font-size:13px;margin-top:0;">
+                    Saudi Arabia SMS gateway — <a href="https://4jawaly.com" target="_blank">4jawaly.com</a>
+                </p>
+                <table class="form-table" style="margin-top:0;">
+                    <tr>
+                        <th style="width:200px;">App Key</th>
+                        <td><input type="text" name="4j_app_key" value="<?php echo esc_attr(get_option('erpgulf_4j_app_key')); ?>" class="regular-text" placeholder="h3NF51eDNq..."></td>
+                    </tr>
+                    <tr>
+                        <th>App Secret</th>
+                        <td><input type="password" name="4j_app_secret" value="<?php echo esc_attr(get_option('erpgulf_4j_app_secret')); ?>" class="regular-text"></td>
+                    </tr>
+                    <tr>
+                        <th>Sender Name</th>
+                        <td>
+                            <input type="text" name="4j_sender" value="<?php echo esc_attr(get_option('erpgulf_4j_sender')); ?>" class="regular-text" placeholder="MRKBATX">
+                            <p class="description">Must be an approved sender name in your 4jawaly account.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Country ISO Code</th>
+                        <td>
+                            <input type="text" name="4j_number_iso" value="<?php echo esc_attr(get_option('erpgulf_4j_number_iso', 'SA')); ?>" class="small-text" maxlength="3" placeholder="SA">
+                            <p class="description">
+                                <strong>SA</strong> Saudi Arabia &nbsp;·&nbsp;
+                                <strong>QA</strong> Qatar &nbsp;·&nbsp;
+                                <strong>AE</strong> UAE &nbsp;·&nbsp;
+                                <strong>KW</strong> Kuwait &nbsp;·&nbsp;
+                                <strong>BH</strong> Bahrain &nbsp;·&nbsp;
+                                <strong>OM</strong> Oman
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            {{!-- ── OCI Email credentials ── --}}
+            <div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
+                <h3 style="margin-top:0;">
+                    📧 Email — OCI SMTP (Jeddah)
+                    <?php if ( $active_email === 'oci' ): ?>
+                        <span style="font-size:12px;font-weight:normal;background:#007cba;color:#fff;padding:2px 8px;border-radius:10px;margin-left:8px;">Active</span>
+                    <?php endif; ?>
+                </h3>
                 <table class="form-table" style="margin-top:0;">
                     <tr><th style="width:200px;">SMTP Host</th><td><input type="text" name="oci_host" value="<?php echo esc_attr(get_option('erpgulf_oci_host', 'smtp.email.me-jeddah-1.oci.oraclecloud.com')); ?>" class="regular-text"></td></tr>
                     <tr><th>Port</th><td><input type="text" name="oci_port" value="<?php echo esc_attr(get_option('erpgulf_oci_port', '587')); ?>" class="small-text"> <span class="description">Use 587 (STARTTLS)</span></td></tr>
@@ -517,6 +570,7 @@ function erpgulf_settings_render() {
                 </table>
             </div>
 
+            {{!-- ── Message Templates ── --}}
             <div style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-radius:4px;margin-bottom:20px;">
                 <h3 style="margin-top:0;">✏️ Message Templates</h3>
                 <p style="background:#f0f6fc;border-left:4px solid #007cba;padding:10px 14px;margin-bottom:20px;">
@@ -594,8 +648,8 @@ function erpgulf_resolve_template( string $template, int $otp ): string {
 add_action('template_redirect', function () {
     if ( trim($_SERVER['REQUEST_URI'], '/') !== 'otp-test' ) return;
 
-    $redirect = erpgulf_redirect_url(0);
-    $styles   = (string) apply_filters( 'erpgulf_test_page_styles',
+    $redirect  = erpgulf_redirect_url(0);
+    $styles    = (string) apply_filters( 'erpgulf_test_page_styles',
         erpgulf_otp_base_css() . '
         body { background:#f4f4f4; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
         .otp-box { box-shadow:0 4px 15px rgba(0,0,0,.1); }
@@ -672,30 +726,57 @@ function erpgulf_handle_send_otp() {
     $errors = [];
     $phone  = get_user_meta($user->ID, 'customer_addresses_0_phone', true);
 
+    // ── Dynamic SMS dispatch ──────────────────────────────────────
+    // Reads the active provider from the admin dropdown.
+    // No code change needed when switching providers.
     if ( $phone ) {
-        $r = erpgulf_send_sms_experttexting($phone, $otp, [
-            'username'     => get_option('erpgulf_et_username'),
-            'api_key'      => get_option('erpgulf_et_api_key'),
-            'api_secret'   => get_option('erpgulf_et_api_secret'),
-            'country_code' => get_option('erpgulf_et_country_code', '966'),
-            'message_en'   => $msg_sms_en,
-            'message_ar'   => $msg_sms_ar,
-            'user_id'      => $user->ID,
-        ]);
-        if ( empty($r['success']) ) $errors[] = 'SMS: ' . ( $r['message'] ?? 'Unknown error' );
+        $sms_provider = get_option('erpgulf_active_sms_provider', 'experttexting');
+        $sms_function = 'erpgulf_send_sms_' . $sms_provider;
+
+        if ( function_exists($sms_function) ) {
+            $r = $sms_function($phone, $otp, [
+                // ExpertTexting settings
+                'username'     => get_option('erpgulf_et_username'),
+                'api_key'      => get_option('erpgulf_et_api_key'),
+                'api_secret'   => get_option('erpgulf_et_api_secret'),
+                'country_code' => get_option('erpgulf_et_country_code', '966'),
+                // 4jawaly settings
+                'app_key'      => get_option('erpgulf_4j_app_key'),
+                'app_secret'   => get_option('erpgulf_4j_app_secret'),
+                'sender'       => get_option('erpgulf_4j_sender'),
+                'number_iso'   => get_option('erpgulf_4j_number_iso', 'SA'),
+                // shared
+                'message_en'   => $msg_sms_en,
+                'message_ar'   => $msg_sms_ar,
+                'user_id'      => $user->ID,
+            ]);
+            if ( empty($r['success']) ) $errors[] = 'SMS: ' . ( $r['message'] ?? 'Unknown error' );
+        } else {
+            $errors[] = "SMS: Provider '{$sms_provider}' is not installed.";
+        }
     }
 
-    $r = erpgulf_send_email_oci($user->user_email, $otp, [
-        'host'       => get_option('erpgulf_oci_host'),
-        'port'       => get_option('erpgulf_oci_port'),
-        'user'       => get_option('erpgulf_oci_user'),
-        'pass'       => get_option('erpgulf_oci_pass'),
-        'from'       => get_option('erpgulf_oci_from'),
-        'subject'    => $msg_email_sub,
-        'message_en' => $msg_email_en,
-        'message_ar' => $msg_email_ar,
-    ]);
-    if ( empty($r['success']) ) $errors[] = 'Email: ' . ( $r['message'] ?? 'Unknown error' );
+    // ── Dynamic Email dispatch ────────────────────────────────────
+    $email_provider = get_option('erpgulf_active_email_provider', 'oci');
+    $email_function = 'erpgulf_send_email_' . $email_provider;
+
+    if ( function_exists($email_function) ) {
+        $r = $email_function($user->user_email, $otp, [
+            // OCI settings
+            'host'       => get_option('erpgulf_oci_host'),
+            'port'       => get_option('erpgulf_oci_port'),
+            'user'       => get_option('erpgulf_oci_user'),
+            'pass'       => get_option('erpgulf_oci_pass'),
+            'from'       => get_option('erpgulf_oci_from'),
+            // shared
+            'subject'    => $msg_email_sub,
+            'message_en' => $msg_email_en,
+            'message_ar' => $msg_email_ar,
+        ]);
+        if ( empty($r['success']) ) $errors[] = 'Email: ' . ( $r['message'] ?? 'Unknown error' );
+    } else {
+        $errors[] = "Email: Provider '{$email_provider}' is not installed.";
+    }
 
     $all_failed = ( ! $phone && ! empty($errors) ) || ( $phone && count($errors) >= 2 );
     if ( $all_failed ) {
@@ -722,7 +803,6 @@ function erpgulf_handle_verify_otp() {
 
     if ( ! $uid ) wp_send_json_error( erpgulf_err( 'Session lost. Please refresh and try again.', 'session_lost' ) );
 
-    // Password path
     if ( $method === 'password' ) {
         $password = $_POST['password'] ?? '';
         if ( empty($password) ) wp_send_json_error( erpgulf_err( 'Please enter your password.', 'session_lost' ) );
@@ -737,7 +817,6 @@ function erpgulf_handle_verify_otp() {
         wp_send_json_error( erpgulf_err( 'Incorrect password. Please try again.', 'wrong_password' ) );
     }
 
-    // OTP path
     $otp    = sanitize_text_field( $_POST['otp'] ?? '' );
     $stored = get_user_meta($uid, 'erpgulf_current_otp', true);
     $expiry = get_user_meta($uid, 'erpgulf_otp_expiry',  true);

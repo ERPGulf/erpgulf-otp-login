@@ -589,6 +589,23 @@ wp-content/plugins/erpgulf-otp-login/
 
 Go to **WordPress Admin → ERPGulf OTP**
 
+---
+
+### Active Providers — select which provider to use
+
+The very first section on the settings page is the provider selector. This is a dropdown — no code change needed when switching providers.
+
+| Setting | Default | Options |
+|---|---|---|
+| Active SMS Provider | ExpertTexting | ExpertTexting, 4jawaly, any future provider |
+| Active Email Provider | OCI SMTP | OCI SMTP, any future provider |
+
+The **Active** badge appears next to the currently selected provider in each credentials section so it is obvious at a glance.
+
+To switch providers: select from the dropdown → Save All Settings. Done.
+
+---
+
 ### SMS Settings (ExpertTexting)
 
 | Field | Description |
@@ -608,6 +625,30 @@ Go to **WordPress Admin → ERPGulf OTP**
 | 965 | Kuwait |
 | 91 | India |
 | 1 | USA / Canada |
+
+---
+
+### SMS Settings (4jawaly — جوالي)
+
+Saudi Arabia SMS gateway — [4jawaly.com](https://4jawaly.com)
+
+| Field | Description |
+|---|---|
+| App Key | Your 4jawaly application key |
+| App Secret | Your 4jawaly application secret |
+| Sender Name | Approved sender name in your 4jawaly account |
+| Country ISO Code | 2-letter ISO country code of recipients. Default: `SA` |
+
+**Common ISO codes:**
+
+| Code | Country |
+|---|---|
+| SA | Saudi Arabia |
+| QA | Qatar |
+| AE | UAE |
+| KW | Kuwait |
+| BH | Bahrain |
+| OM | Oman |
 
 ---
 
@@ -692,7 +733,43 @@ User types identifier
 
 ## Adding New Providers
 
-Each provider is a single PHP file with one function.
+The plugin uses a dynamic provider system. No code changes are needed when switching or adding providers — everything is controlled from the admin settings page.
+
+### How the system works
+
+```
+Admin page → Active Providers dropdown → select → Save
+                        ↓
+Plugin reads: get_option('erpgulf_active_sms_provider')
+Calls:        erpgulf_send_sms_{selected_provider}()
+```
+
+The sending code never changes. Only the dropdown value changes.
+
+### Adding a new provider — 3 steps only
+
+**Step 1** — Create your provider file (e.g. `twilio-provider.php`) following the contract below.
+
+**Step 2** — Add at the top of `erpgulf-otp-login.php`:
+```php
+require_once plugin_dir_path(__FILE__) . 'twilio-provider.php';
+```
+
+**Step 3** — Add one line to the provider registry in `erpgulf-otp-login.php`:
+```php
+function erpgulf_sms_providers(): array {
+    return [
+        'experttexting' => 'ExpertTexting',
+        '4jawaly'       => '4jawaly (جوالي)',
+        'twilio'        => 'Twilio',   // ← add this line
+    ];
+}
+```
+
+Then go to Admin → ERPGulf OTP → Active Providers → select Twilio → Save.
+No other code touched.
+
+---
 
 ### SMS Provider Contract
 ```
@@ -710,12 +787,13 @@ Returns:   [ 'success' => true ]
 
 ### Provider Summary
 
-| Provider | File | Type |
-|---|---|---|
-| ExpertTexting | `experttexting-provider.php` | SMS (built-in) |
-| OCI SMTP | `oci-smtp-provider.php` | Email (built-in) |
-| Twilio | `twilio-provider.php` | SMS (example) |
-| SendGrid | `sendgrid-provider.php` | Email (example) |
+| Provider | File | Type | Status |
+|---|---|---|---|
+| ExpertTexting | `experttexting-provider.php` | SMS | Built-in (default) |
+| 4jawaly | `4jawaly-provider.php` | SMS | Built-in |
+| OCI SMTP | `oci-smtp-provider.php` | Email | Built-in (default) |
+| Twilio | `twilio-provider.php` | SMS | Example |
+| SendGrid | `sendgrid-provider.php` | Email | Example |
 
 See the full provider examples in the detailed hooks reference section above.
 
@@ -859,6 +937,8 @@ define( 'WP_DEBUG_DISPLAY', false );
 | Problem | Fix |
 |---|---|
 | `ERPGulfOTP is not defined` | Plugin file not updated to v4.6.0. Re-upload `erpgulf-otp-login.php` |
+| Admin menu shows no icon | Use a valid dashicon name. Browse all icons at [developer.wordpress.org/resource/dashicons](https://developer.wordpress.org/resource/dashicons). Current icon: `dashicons-shield` |
+| SMS not sending — wrong provider | Check Admin → ERPGulf OTP → Active Providers dropdown |
 | SMS: Unrecognized To Number | Check Default Country Code in settings |
 | Email: 535 not authorized | Add sender to OCI Approved Senders. Publish SPF/DKIM |
 | Nothing in debug.log | `touch wp-content/debug.log && chmod 666 wp-content/debug.log` |
