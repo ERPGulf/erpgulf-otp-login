@@ -301,7 +301,7 @@ function erpgulf_register_fields(): array {
             'label'    => 'Mobile Number',
             'type'     => 'tel',
             'required' => true,
-            'meta_key' => 'customer_addresses_0_phone',
+            'meta_key' => 'billing_phone',
             'autocomplete' => 'tel',
         ],
         'password' => [
@@ -883,7 +883,7 @@ function erpgulf_find_user_by_phone( string $raw_input, int $match_digits = 7 ):
 
     $rows = $wpdb->get_results(
         "SELECT user_id, meta_value FROM {$wpdb->prefix}usermeta
-         WHERE meta_key = 'customer_addresses_0_phone' AND meta_value != ''"
+         WHERE meta_key = 'billing_phone' AND meta_value != ''"
     );
 
     if ( empty( $rows ) ) return null;
@@ -991,7 +991,7 @@ function erpgulf_handle_send_otp() {
     $msg_email_ar  = erpgulf_resolve_template( get_option('erpgulf_msg_email_ar',  $def_email_ar),  $otp );
 
     $errors = [];
-    $phone  = get_user_meta($user->ID, 'customer_addresses_0_phone', true);
+    $phone  = get_user_meta($user->ID, 'billing_phone', true);
 
     // ── Dynamic SMS dispatch ──────────────────────────────────────
     // Reads the active provider from the admin dropdown.

@@ -318,7 +318,7 @@ add_action( 'erpgulf_notify', function ( int $user_id, array $payload ) {
     $user  = get_userdata( $user_id );
     if ( ! $user ) return;
 
-    $phone = (string) get_user_meta( $user_id, 'customer_addresses_0_phone', true );
+    $phone = (string) get_user_meta( $user_id, 'billing_phone', true );
     erpgulf_do_send( $phone, $user->user_email, $payload );
 
 }, 10, 2 );
