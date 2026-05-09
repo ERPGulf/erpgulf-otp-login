@@ -113,6 +113,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 require_once plugin_dir_path(__FILE__) . 'experttexting-provider.php';
 require_once plugin_dir_path(__FILE__) . '4jawaly-provider.php';
 require_once plugin_dir_path(__FILE__) . 'oci-smtp-provider.php';
+require_once plugin_dir_path(__FILE__) . 'erpgulf-notifications.php';
 
 // ─────────────────────────────────────────────────────────────────
 // PROVIDER REGISTRY
@@ -406,7 +407,6 @@ function erpgulf_otp_form_html(): string {
             <button class="otp-tab" data-tab="register">Register</button>
         </div>
 
-        {{!-- LOGIN TAB --}}
         <div class="otp-tab-content" id="tab-login">
             <div id="otp-step-1">
                 <input type="text"
@@ -438,7 +438,6 @@ function erpgulf_otp_form_html(): string {
             <p id="otp-msg"></p>
         </div>
 
-        {{!-- REGISTER TAB --}}
         <div class="otp-tab-content" id="tab-register" style="display:none;">
             ' . erpgulf_register_form_html() . '
         </div>

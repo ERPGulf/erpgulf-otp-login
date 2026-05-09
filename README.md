@@ -932,7 +932,128 @@ define( 'WP_DEBUG_DISPLAY', false );
 
 ---
 
+## Notifications System
+
+**Admin → ERPGulf OTP → Notifications**
+
+Send SMS and Email alerts automatically for WooCommerce order events — using the same providers already configured in the OTP plugin. No extra credentials needed.
+
+### Built-in Order Triggers
+
+| Event | Hook | Default |
+|---|---|---|
+| ✅ Order Confirmed | `woocommerce_order_status_processing` | ON |
+| 🚚 Order Shipped | `woocommerce_order_status_shipped` | ON |
+| 🎉 Order Delivered | `woocommerce_order_status_completed` | ON |
+| ❌ Order Cancelled | `woocommerce_order_status_cancelled` | ON |
+| ⏳ Order On Hold | `woocommerce_order_status_on-hold` | ON |
+| ↩️ Order Refunded | `woocommerce_order_status_refunded` | ON |
+
+Each trigger has:
+- **ON/OFF** toggle
+- **SMS** and **Email** checkboxes (send one or both)
+- Editable **English** and **Arabic** message templates
+
+### Message Placeholders
+
+| Placeholder | Replaced with |
+|---|---|
+| `{site}` | WordPress site name |
+| `{order_id}` | WooCommerce order number |
+| `{order_total}` | Formatted order total |
+| `{first_name}` | Customer's first name |
+| `{status}` | Order status label |
+
+---
+
+### Developer API
+
+#### Send to a WordPress user (by user ID)
+
+Looks up the user's registered phone and email automatically.
+
+```php
+do_action( 'erpgulf_notify', $user_id, [
+    'subject'    => 'Your order is ready',
+    'message_en' => 'Hello, your order is ready for pickup.',
+    'message_ar' => 'مرحباً، طلبك جاهز للاستلام.',
+    'sms'        => true,   // optional — default true
+    'email'      => true,   // optional — default true
+] );
+```
+
+#### Send directly to a phone/email (no user account needed)
+
+Works for guest checkouts or any external contact.
+
+```php
+do_action( 'erpgulf_notify_direct', [
+    'phone'      => '0501234567',
+    'email'      => 'customer@example.com',
+    'subject'    => 'Appointment Confirmed',
+    'message_en' => 'Your appointment is confirmed for tomorrow at 10am.',
+    'message_ar' => 'تم تأكيد موعدك غداً الساعة العاشرة صباحاً.',
+    'sms'        => true,
+    'email'      => true,
+] );
+```
+
+#### Custom WooCommerce order trigger
+
+Wire any order status change to a custom message:
+
+```php
+add_action( 'woocommerce_order_status_processing', function( $order_id ) {
+    $order = wc_get_order( $order_id );
+    do_action( 'erpgulf_notify_direct', [
+        'phone'      => $order->get_billing_phone(),
+        'email'      => $order->get_billing_email(),
+        'subject'    => 'Order #' . $order_id . ' Confirmed',
+        'message_en' => 'Hi ' . $order->get_billing_first_name() . ', order #' . $order_id . ' confirmed!',
+        'message_ar' => 'مرحباً، تم تأكيد طلبك رقم #' . $order_id . '!',
+    ]);
+} );
+```
+
+#### Send from a theme or custom plugin
+
+```php
+// After any event — appointment, enquiry, registration, etc.
+do_action( 'erpgulf_notify_direct', [
+    'phone'      => get_user_meta( $user_id, 'customer_addresses_0_phone', true ),
+    'email'      => get_userdata( $user_id )->user_email,
+    'subject'    => 'Welcome to ' . get_bloginfo('name'),
+    'message_en' => 'Welcome! Your account is now active.',
+    'message_ar' => 'مرحباً! حسابك الآن نشط.',
+] );
+```
+
+### Installation
+
+1. Upload `erpgulf-notifications.php` to the plugin folder:
+   ```
+   /wp-content/plugins/erpgulf-otp-login/erpgulf-notifications.php
+   ```
+
+2. Add one line to `erpgulf-otp-login.php` after the existing `require_once` lines:
+   ```php
+   require_once plugin_dir_path(__FILE__) . 'erpgulf-notifications.php';
+   ```
+
+3. Go to **Admin → ERPGulf OTP → Notifications** and configure.
+
+### Notes for Developers
+
+- The notification system uses the **same SMS and Email providers** configured in OTP settings. No extra setup needed.
+- Works for **guest customers** too — phone and email are read directly from the order billing fields.
+- Sending is **fire-and-forget** — failures are logged to `wp-content/debug.log` but do not interrupt the order flow.
+- All six order triggers are **enabled by default**. Turn off any you don't need from the admin page.
+- You can call `erpgulf_notify` and `erpgulf_notify_direct` from **anywhere** — themes, other plugins, WP-CLI scripts, REST API callbacks.
+
+---
+
 ## Troubleshooting
+
 
 | Problem | Fix |
 |---|---|
